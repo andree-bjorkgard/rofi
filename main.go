@@ -13,19 +13,19 @@ import (
 )
 
 type Option struct {
-	Category string
-	Cmd      string
-	Icon     string
-	Name     string
-	Value    string
+	Category    string
+	Cmds        []string
+	Icon        string
+	Name        string
+	Value       string
+	IsMultiline bool
 }
 
 type Options []Option
 
 type Value struct {
-	Cmd      string
-	Value    string
-	Modifier int
+	Cmd   string
+	Value string
 }
 
 var verbosity = 0
@@ -34,7 +34,7 @@ var history = ""
 const maxHistoryCount = 5
 
 func init() {
-	fmt.Println("\000no-custom\x1ftrue")
+	fmt.Println("\x00no-custom\x1ftrue")
 
 	if v := os.Getenv("ROFI_DEBUG"); v != "" {
 		if num, err := strconv.Atoi(v); err == nil {
@@ -50,18 +50,22 @@ func (o Option) Print() {
 		}
 		return
 
+	} else if len(o.Cmds) < 1 {
+		log.Println("Can't print options with no commands")
+		return
 	}
 
 	str := o.Name
 	if o.Category != "" {
-		str = fmt.Sprintf("%s (%s)", str, o.Category)
+		separator := " "
+		if o.IsMultiline {
+			separator = "\r"
+		}
+
+		str = fmt.Sprintf("%s%s%s", str, separator, o.Category)
 	}
 
-	if o.Cmd != "" {
-		str = fmt.Sprintf("%s\000info\x1f%s:%s", str, o.Cmd, o.Value)
-	} else {
-		str = fmt.Sprintf("%s\000info\x1f%s", str, o.Value)
-	}
+	str = fmt.Sprintf("%s\x00info\x1f%s", str, strings.Join(append([]string{o.Value}, o.Cmds...), "|"))
 
 	if o.Icon != "" {
 		str = fmt.Sprintf("%s\x1ficon\x1f%s", str, o.Icon)
@@ -124,27 +128,35 @@ func (o *Options) PrioritizeHistory(namespace string) {
 }
 
 func SetPrompt(prompt string) {
-	fmt.Printf("\000prompt\x1f%s\n", prompt)
+	fmt.Printf("\x00prompt\x1f%s\n", prompt)
 }
 
 func SetMessage(message string) {
-	fmt.Printf("\000message\x1f%s\n", message)
+	fmt.Printf("\x00message\x1f%s\n", message)
+}
+
+func SetActive(activeRows string) {
+	fmt.Printf("\x00active\x1f%s\n", activeRows)
 }
 
 func GetValue() *Value {
-	if v := os.Getenv("ROFI_INFO"); v != "" {
+	if v := os.Getenv("ROFI_INFO"); v != "" && GetState() != 0 {
 		val := Value{}
-		if s := GetState(); s >= 10 {
-			val.Modifier = s - 9
+		index := GetState() - 1
+		if index > 8 {
+			index -= 8
 		}
 
-		values := strings.SplitN(v, ":", 2)
-		if len(values) == 2 {
-			val.Cmd = values[0]
-			val.Value = values[1]
-		} else {
-			val.Value = values[0]
+		values := strings.Split(v, "|")
+		val.Value = values[0]
+		cmds := values[1:]
+
+		if len(cmds) <= index {
+			log.Printf("Index %d did not result in a valid command. Selecting first command", index)
+			index = 0
 		}
+
+		val.Cmd = cmds[index]
 
 		return &val
 	}
@@ -156,7 +168,7 @@ func EnableHotkeys() {
 	if verbosity > 3 {
 		log.Println("Enabled hotkeys")
 	}
-	fmt.Println("\000use-hot-keys\x1ftrue")
+	fmt.Println("\x00use-hot-keys\x1ftrue")
 }
 
 func GetState() int {
@@ -182,11 +194,19 @@ func Debug(verbosityLevel int) {
 	}
 }
 
+func EnableMarkup() {
+	if verbosity > 3 {
+		log.Println("Enabled custom entries")
+	}
+
+	fmt.Println("\x00markup-rows\x1ftrue")
+}
+
 func EnableCustom() {
 	if verbosity > 3 {
 		log.Println("Enabled custom entries")
 	}
-	fmt.Println("\000no-custom\x1ffalse")
+	fmt.Println("\x00no-custom\x1ffalse")
 }
 
 func GetVerbosityLevel() int {
