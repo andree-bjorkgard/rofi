@@ -151,7 +151,7 @@ func GetValue() *Value {
 			index -= 8
 		}
 
-		values := strings.Split(v, "|")
+		values := strings.Split(v, "||")
 		val.Value = values[0]
 		cmds := values[1:]
 
