@@ -13,12 +13,18 @@ import (
 )
 
 type Option struct {
-	Category    string
-	Cmds        []string
-	Icon        string
-	Name        string
-	Value       string
+	Label string
+	Icon  string
+	Value string
+
+	Category string
+	Cmds     []string
+
 	IsMultiline bool
+
+	IsUrgent      bool
+	IsHighlighted bool
+	UseMarkup     bool
 }
 
 type Options []Option
@@ -34,8 +40,6 @@ var history = ""
 const maxHistoryCount = 5
 
 func init() {
-	fmt.Println("\x00no-custom\x1ftrue")
-
 	if v := os.Getenv("ROFI_DEBUG"); v != "" {
 		if num, err := strconv.Atoi(v); err == nil {
 			Debug(num)
@@ -44,7 +48,7 @@ func init() {
 }
 
 func (o Option) Print() {
-	if o.Name == "" {
+	if o.Label == "" {
 		if verbosity >= 5 {
 			log.Println("Option was empty")
 		}
@@ -55,7 +59,7 @@ func (o Option) Print() {
 		return
 	}
 
-	str := o.Name
+	str := o.Label
 	if o.Category != "" {
 		separator := " "
 		if o.IsMultiline {
@@ -65,7 +69,7 @@ func (o Option) Print() {
 		str = fmt.Sprintf("%s%s%s", str, separator, o.Category)
 	}
 
-	str = fmt.Sprintf("%s\x00info\x1f%s", str, strings.Join(append([]string{o.Value}, o.Cmds...), "|"))
+	str = fmt.Sprintf("%s\x00info\x1f%s", str, strings.Join(append([]string{o.Value}, o.Cmds...), "||"))
 
 	if o.Icon != "" {
 		str = fmt.Sprintf("%s\x1ficon\x1f%s", str, o.Icon)
@@ -80,7 +84,7 @@ func (o Option) Print() {
 
 func (opts Options) Sort() {
 	sort.Slice(opts, func(a, b int) bool {
-		return strings.ToLower(opts[a].Name) < strings.ToLower(opts[b].Name)
+		return strings.ToLower(opts[a].Label) < strings.ToLower(opts[b].Label)
 	})
 }
 
@@ -202,11 +206,11 @@ func EnableMarkup() {
 	fmt.Println("\x00markup-rows\x1ftrue")
 }
 
-func EnableCustom() {
+func DisableCustom() {
 	if verbosity > 3 {
-		log.Println("Enabled custom entries")
+		log.Println("Disabled custom entries")
 	}
-	fmt.Println("\x00no-custom\x1ffalse")
+	fmt.Println("\x00no-custom\x1ftrue")
 }
 
 func GetVerbosityLevel() int {
