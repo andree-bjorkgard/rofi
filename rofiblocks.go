@@ -176,6 +176,7 @@ func broadcastEvents(ch chan<- Value) {
 	for {
 		index := 0
 		var ev event
+		// Waiting for events here
 		if err := dec.Decode(&ev); err != nil {
 			log.Fatalf("rofi.broadcastEvents: Could not decode event: %s\n", err)
 		}
@@ -185,6 +186,7 @@ func broadcastEvents(ch chan<- Value) {
 			continue
 		}
 
+		// If it is a custom entry, a second event gets post right after
 		if ev.Name == eventNameCustomEntry {
 			var indexEv event
 			if err := dec.Decode(&indexEv); err != nil {
