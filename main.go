@@ -3,11 +3,8 @@ package rofi
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
-	"path"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -27,279 +24,202 @@ type Option struct {
 	UseMarkup     bool
 }
 
-type Options []Option
-
 type Value struct {
 	Cmd   string
 	Value string
 }
 
-var verbosity = 0
-var history = ""
+type Model struct {
+	Message     string
+	Overlay     string
+	Prompt      string
+	Input       string
+	ActiveEntry int
 
-const maxHistoryCount = 5
-
-func init() {
-	if v := os.Getenv("ROFI_DEBUG"); v != "" {
-		if num, err := strconv.Atoi(v); err == nil {
-			Debug(num)
-		}
-	}
+	Options []Option
 }
 
-func (o Option) Print() {
-	if o.Label == "" {
-		if verbosity >= 5 {
-			log.Println("Option was empty")
-		}
-		return
+type blockOption struct {
+	Text string `json:"text,omitempty"`
+	Icon string `json:"icon,omitempty"`
+	Data string `json:"data,omitempty"`
 
-	} else if len(o.Cmds) < 1 {
-		log.Println("Can't print options with no commands")
-		return
-	}
-
-	str := o.Label
-	if o.Category != "" {
-		separator := " "
-		if o.IsMultiline {
-			separator = "\r"
-		}
-
-		str = fmt.Sprintf("%s%s%s", str, separator, o.Category)
-	}
-
-	str = fmt.Sprintf("%s\x00info\x1f%s", str, strings.Join(append([]string{o.Value}, o.Cmds...), "||"))
-
-	if o.Icon != "" {
-		str = fmt.Sprintf("%s\x1ficon\x1f%s", str, o.Icon)
-	}
-
-	if verbosity >= 5 {
-		log.Println("Option:", str)
-	}
-
-	fmt.Println(str)
+	Urgent    bool `json:"urgent,omitempty"`
+	Highlight bool `json:"highlight,omitempty"`
+	Markup    bool `json:"markup,omitempty"`
 }
 
-func (opts Options) Sort() {
-	sort.Slice(opts, func(a, b int) bool {
-		return strings.ToLower(opts[a].Label) < strings.ToLower(opts[b].Label)
-	})
+type blockModel struct {
+	Message     string `json:"message"`
+	Overlay     string `json:"overlay"`
+	Prompt      string `json:"prompt"`
+	Input       string `json:"input"`
+	InputAction string `json:"input action,omitempty"`
+	EventFormat string `json:"event format,omitempty"`
+	ActiveEntry int    `json:"active entry,omitempty"`
+
+	Lines []blockOption `json:"lines,omitempty"`
 }
 
-func (opts Options) PrintAll() {
-	if history != "" {
-		opts.PrioritizeHistory(history)
-	}
+type eventName string
 
-	for _, o := range opts {
-		o.Print()
+const (
+	eventNameSelectedEntry    eventName = "SELECT_ENTRY"
+	eventNameCustomEntry      eventName = "ACTIVE_ENTRY"
+	eventNameCustomEntryIndex eventName = "CUSTOM_KEY"
+)
+
+func (en eventName) IsValid() bool {
+	switch en {
+	case eventNameSelectedEntry, eventNameCustomEntry, eventNameCustomEntryIndex:
+		return true
 	}
+	return false
 }
 
-func (o *Options) PrioritizeHistory(namespace string) {
-	opts := *o
-	cache, err := getCachePath(namespace)
+func (e eventName) String() string {
+	return string(e)
+}
+
+type event struct {
+	Name  eventName `json:"name"`
+	Value string    `json:"value"`
+	Index string    `json:"index"`
+}
+
+func (e event) isValid() bool {
+	if !e.Name.IsValid() {
+		return false
+	}
+
+	if (e.Name == eventNameCustomEntry || e.Name == eventNameSelectedEntry) && e.Value == "" {
+		return false
+	}
+	i, _ := strconv.Atoi(e.Index)
+	if e.Name == eventNameCustomEntryIndex && i < 1 {
+		return false
+	}
+
+	return true
+}
+
+const eventFormat string = "{\"index\":\"{{value_escaped}}\",\"name\":\"{{name_enum}}\",\"value\":\"{{data}}\"}"
+
+func NewRofiBlock() (Model, <-chan Value) {
+	ch := make(chan Value)
+
+	go broadcastEvents(ch)
+	return Model{}, ch
+}
+
+// Using spread to make passing selected index optional... Only cares about the first value
+func (m *Model) Render(i ...int) {
+	data := blockModel{
+		Message:     m.Message,
+		Overlay:     m.Overlay,
+		Prompt:      m.Prompt,
+		Input:       m.Input,
+		EventFormat: eventFormat,
+		Lines:       m.mapOptions(),
+	}
+
+	if len(i) > 0 {
+		data.ActiveEntry = i[0]
+	}
+	j, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("Error while finding cache: %s\n", err)
-		return
-	}
-	f, err := os.OpenFile(cache, os.O_RDONLY, 0666)
-	if err != nil {
-		log.Printf("Error while opening cache: %s\n", err)
-		return
-	}
-	defer f.Close()
-
-	history, err := readHistory(f)
-	if err != nil {
-		log.Printf("Error while reading history: %s", err)
+		log.Fatalf("rofi.Render: could not marshal: %s\n", err)
 	}
 
-	prio := []Option{}
+	fmt.Println(string(j))
+}
 
-	for _, h := range history {
-		for i, opt := range opts {
-			if h == opt.Value {
-				opts = append(opts[:i], opts[i+1:]...)
-				prio = append(prio, opt)
+func (m *Model) mapOptions() []blockOption {
+	var bos []blockOption
+	for _, o := range m.Options {
+		if o.Label == "" {
+			continue
+		} else if len(o.Cmds) < 1 {
+			log.Println("Can't print options with no commands")
+			continue
+		}
+
+		label := o.Label
+		if o.Category != "" {
+			separator := " "
+			if o.IsMultiline {
+				separator = "\r"
+			}
+
+			label = fmt.Sprintf("%s%s%s", label, separator, o.Category)
+		}
+
+		bos = append(bos, blockOption{
+			Icon:      o.Icon,
+			Text:      label,
+			Data:      strings.Join(append([]string{o.Value}, o.Cmds...), "||"),
+			Markup:    o.UseMarkup,
+			Urgent:    o.IsUrgent,
+			Highlight: o.IsHighlighted,
+		})
+	}
+
+	return bos
+}
+
+func getValue(eventValue string, index int) Value {
+	val := Value{}
+	output := strings.Split(eventValue, "||")
+	if len(output) < 2 {
+		log.Fatalf("Invalid event value. Needs to have a value and at least one command: %s\n", eventValue)
+	}
+
+	val.Value = output[0]
+
+	cmds := output[1:]
+	if len(cmds) <= index {
+		log.Printf("Index %d did not result in a valid command. Selecting first command", index)
+		index = 0
+	}
+	val.Cmd = cmds[index]
+
+	return val
+}
+
+func broadcastEvents(ch chan<- Value) {
+	dec := json.NewDecoder(os.Stdin)
+	for {
+		index := 0
+		var ev event
+		// Waiting for events here
+		if err := dec.Decode(&ev); err != nil {
+			log.Fatalf("rofi.broadcastEvents: Could not decode event: %s\n", err)
+		}
+
+		if !ev.isValid() {
+			log.Printf("rofi.broadcastEvents: event was not valid: %#v\n", ev)
+			continue
+		}
+
+		// If it is a custom entry, a second event gets post right after
+		if ev.Name == eventNameCustomEntry {
+			var indexEv event
+			if err := dec.Decode(&indexEv); err != nil {
+				log.Fatalf("rofi.broadcastEvents: Could not decode event: %s\n", err)
+			}
+
+			if indexEv.Name != eventNameCustomEntryIndex && !indexEv.isValid() {
+				log.Printf("rofi.broadcastEvents: event with index was not valid: %#v\n", indexEv)
+				continue
+			}
+
+			var err error
+			index, err = strconv.Atoi(indexEv.Index)
+			if err != nil {
+				log.Printf("rofi.broadcastEvents: event with index could not be converted: %s\n", err)
 			}
 		}
-	}
 
-	*o = append(prio, opts...)
-}
-
-func SetPrompt(prompt string) {
-	fmt.Printf("\x00prompt\x1f%s\n", prompt)
-}
-
-func SetMessage(message string) {
-	fmt.Printf("\x00message\x1f%s\n", message)
-}
-
-func SetActive(activeRows string) {
-	fmt.Printf("\x00active\x1f%s\n", activeRows)
-}
-
-func GetValue() *Value {
-	if v := os.Getenv("ROFI_INFO"); v != "" && GetState() != 0 {
-		val := Value{}
-		index := GetState() - 1
-		if index > 8 {
-			index -= 8
-		}
-
-		values := strings.Split(v, "||")
-		val.Value = values[0]
-		cmds := values[1:]
-
-		if len(cmds) <= index {
-			log.Printf("Index %d did not result in a valid command. Selecting first command", index)
-			index = 0
-		}
-
-		val.Cmd = cmds[index]
-
-		return &val
-	}
-
-	return nil
-}
-
-func EnableHotkeys() {
-	if verbosity > 3 {
-		log.Println("Enabled hotkeys")
-	}
-	fmt.Println("\x00use-hot-keys\x1ftrue")
-}
-
-func GetState() int {
-	num, _ := strconv.Atoi(os.Getenv("ROFI_RETV"))
-	return num
-}
-
-/*
-	1-5, 0 means off
-*/
-func Debug(verbosityLevel int) {
-	if verbosityLevel > 0 {
-		f, err := os.OpenFile("rofi-debug.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-		if err != nil {
-			return
-		}
-		log.Default().SetOutput(f)
-		log.SetFlags(0)
-		log.Printf("\n---------------------------------------------------\n\n")
-		log.SetFlags(log.LstdFlags)
-
-		verbosity = verbosityLevel
-	}
-}
-
-func EnableMarkup() {
-	if verbosity > 3 {
-		log.Println("Enabled custom entries")
-	}
-
-	fmt.Println("\x00markup-rows\x1ftrue")
-}
-
-func DisableCustom() {
-	if verbosity > 3 {
-		log.Println("Disabled custom entries")
-	}
-	fmt.Println("\x00no-custom\x1ftrue")
-}
-
-func GetVerbosityLevel() int {
-	return verbosity
-}
-
-func UseHistory(namespace string) {
-	history = namespace
-}
-
-func getCachePath(namespace string) (string, error) {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return path.Join(cache, "/rofi/", namespace+".json"), nil
-}
-
-func readHistory(f *os.File) ([]string, error) {
-	var content []string
-
-	b, err := ioutil.ReadAll(f)
-	if err != nil {
-		return content, err
-	}
-
-	err = json.Unmarshal(b, &content)
-
-	return content, err
-}
-
-func writeHistory(f *os.File, content []string) error {
-	b, err := json.MarshalIndent(content, "", "  ")
-
-	if err != nil {
-		return fmt.Errorf("error while marshalling history: %w", err)
-	}
-
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("error while clearing history: %w", err)
-	}
-
-	if _, err := f.WriteAt(b, 0); err != nil {
-		return fmt.Errorf("error while writing history: %w", err)
-	}
-
-	return nil
-}
-
-func SaveToHistory(namespace, value string) {
-	cache, err := getCachePath(namespace)
-	if err != nil {
-		log.Printf("Error while finding cache: %s\n", err)
-		return
-	}
-
-	if err := os.MkdirAll(path.Dir(cache), os.ModePerm); err != nil {
-		log.Printf("Error while creating path: %s\n", err)
-		return
-	}
-
-	f, err := os.OpenFile(cache, os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		log.Printf("Error while opening cache: %s\n", err)
-		return
-	}
-
-	defer f.Close()
-
-	history, err := readHistory(f)
-	if err != nil {
-		log.Printf("Error while reading history: %s\n", err)
-	}
-
-	// shifting
-	for i, val := range history {
-		if val == value {
-			history = append(history[:i], history[i+1:]...)
-		}
-	}
-
-	nextHistory := []string{value}
-	if len(history) >= maxHistoryCount {
-		nextHistory = append(nextHistory, history[:maxHistoryCount-1]...)
-	} else {
-		nextHistory = append(nextHistory, history...)
-	}
-
-	if err := writeHistory(f, nextHistory); err != nil {
-		log.Printf("Error while saving history: %s\n", err)
+		ch <- getValue(ev.Value, index)
 	}
 }
