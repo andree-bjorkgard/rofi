@@ -11,11 +11,11 @@ import (
 
 type Option struct {
 	Label string
+	Info  []string
 	Icon  string
 	Value string
 
-	Category string
-	Cmds     []string
+	Cmds []string
 
 	IsMultiline bool
 
@@ -145,13 +145,13 @@ func (m *Model) mapOptions() []blockOption {
 		}
 
 		label := o.Label
-		if o.Category != "" {
+		if len(o.Info) > 0 {
 			separator := " "
 			if o.IsMultiline {
-				separator = "\r"
+				separator = "\n"
 			}
 
-			label = fmt.Sprintf("%s%s%s", label, separator, o.Category)
+			label = fmt.Sprintf("%s%s%s", label, separator, strings.Join(o.Info, separator))
 		}
 
 		bos = append(bos, blockOption{
